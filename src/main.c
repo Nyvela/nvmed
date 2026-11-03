@@ -99,5 +99,17 @@ void _start(void) {
   sys_write(1, ver, converted);
   sys_write(1, "\n", 1);
 
+  volatile uint32_t *cc_reg = (volatile uint32_t*)(USER_MMIO_MIN + 0x14);
+  *cc_reg &= ~1u;
+
+  volatile uint32_t *csts_reg = (volatile uint32_t*)(USER_MMIO_MIN + 0x1C);
+
+  while (*csts_reg & 1u) {
+    __asm__ volatile ("pause");
+  }
+
+  char disabled_msg[] = "\nNVMED: disabled controller.\n";
+  sys_write(1, disabled_msg, sizeof(disabled_msg) - 1);
+
   sys_exit(0);
 }
