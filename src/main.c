@@ -2,6 +2,8 @@
 #include <npcid/query.h>
 #include <nyvd/query.h>
 
+#include "../include/queue.h"
+
 void _start(void) {
   uint64_t npcid_tid = 0;
 
@@ -94,7 +96,7 @@ void _start(void) {
 
   uint64_t converted = uitoa(*vs_reg, ver, 32);
   
-  char ver_msg[] = "\nNVMED: NVMe Controller Version: ";
+  char ver_msg[] = "NVMED: NVMe Controller Version: ";
   sys_write(1, ver_msg, sizeof(ver_msg) - 1);
   sys_write(1, ver, converted);
   sys_write(1, "\n", 1);
@@ -108,8 +110,26 @@ void _start(void) {
     __asm__ volatile ("pause");
   }
 
-  char disabled_msg[] = "\nNVMED: disabled controller.\n";
+  char disabled_msg[] = "NVMED: disabled controller.\n";
   sys_write(1, disabled_msg, sizeof(disabled_msg) - 1);
+  
+  // TODO: 1 page / queue is overkill, but I am too lazy to add dma_alloc for now
+  nvme_queue_t* sq = (nvme_queue_t*)sys_dma_alloc_page();
+
+  if (!sq) {
+    char msg[] = "NVMED: Failed to allocate submission queue.\n";
+    sys_write(1, msg, sizeof(msg) - 1);
+  }
+
+  nvme_queue_t* cq = (nvme_queue_t*)sys_dma_alloc_page();
+  
+  if (!cq) {
+    char msg[] = "NVMED: Failed to allocate completition queue.\n";
+    sys_write(1, msg, sizeof(msg) - 1);
+  }
+
+  char alloc_msg[] = "NVMED: allocated CQ/SQ.\n";
+  sys_write(1, alloc_msg, sizeof(alloc_msg) - 1);
 
   sys_exit(0);
 }
