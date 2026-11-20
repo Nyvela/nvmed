@@ -4,6 +4,23 @@
 
 #include "../include/queue.h"
 
+void nvme_write32(volatile void* base, uint32_t offset, uint32_t value) {
+  *(volatile uint32_t*)((uintptr_t)base + offset) = value; 
+}
+
+uint32_t nvme_read32(volatile void* base, uint32_t offset) {
+  return *(volatile uint32_t*)((uintptr_t)base + offset);
+}
+
+
+void nvme_write64(volatile void* base, uint32_t offset, uint64_t value) {
+  *(volatile uint64_t*)((uintptr_t)base + offset) = value; 
+}
+
+uint64_t nvme_read64(volatile void* base, uint32_t offset) {
+  return *(volatile uint64_t*)((uintptr_t)base + offset);
+}
+
 void _start(void) {
   uint64_t npcid_tid = 0;
 
@@ -90,7 +107,7 @@ void _start(void) {
     sys_exit(1);
   }
 
-  volatile uint32_t *vs_reg = (volatile uint32_t*)(USER_MMIO_MIN + 0x8);
+  volatile uint32_t *vs_reg = (volatile uint32_t*)(USER_MMIO_MIN + NVME_REG_VS);
 
   char ver[32];
 
@@ -101,10 +118,10 @@ void _start(void) {
   sys_write(1, ver, converted);
   sys_write(1, "\n", 1);
 
-  volatile uint32_t *cc_reg = (volatile uint32_t*)(USER_MMIO_MIN + 0x14);
+  volatile uint32_t *cc_reg = (volatile uint32_t*)(USER_MMIO_MIN + NVME_REG_CC);
   *cc_reg &= ~1u;
 
-  volatile uint32_t *csts_reg = (volatile uint32_t*)(USER_MMIO_MIN + 0x1C);
+  volatile uint32_t *csts_reg = (volatile uint32_t*)(USER_MMIO_MIN + NVME_REG_CSTS);
 
   while (*csts_reg & 1u) {
     __asm__ volatile ("pause");
@@ -130,6 +147,26 @@ void _start(void) {
 
   char alloc_msg[] = "NVMED: allocated CQ/SQ.\n";
   sys_write(1, alloc_msg, sizeof(alloc_msg) - 1);
+  
+  uint32_t aqa = (NVME_ADMIN_QUEUE_SIZE - 1) | ((NVME_ADMIN_QUEUE_SIZE - 1) << 16);
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_AQA, aqa);
+
+  char aqa_set_msg[] = "NVMED: Configured AQA.\n";
+  sys_write(1, aqa_set_msg, sizeof(aqa_set_msg) - 1);
+
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ASQ, (uint64_t)sq);
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ACQ, (uint64_t)cq);
+  
+  char asq_acq_msg[] = "NVMED: Configured ASQ/ACQ.\n";
+  sys_write(1, asq_acq_msg, sizeof(asq_acq_msg) - 1);
+
+  uint32_t cc = 0;
+
+  cc |= 1u; // EN
+  cc |= (6u << 16); // IOSQES
+  cc |= (4u << 16); // IOCQES
+
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_CC, cc);
 
   sys_exit(0);
 }

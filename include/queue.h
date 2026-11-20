@@ -4,6 +4,15 @@
 #include <stdint.h>
 
 #define NVME_CQE_PHASE_BIT 0x0001
+#define NVME_ADMIN_QUEUE_SIZE 64
+
+#define NVME_REG_CAP   0x00
+#define NVME_REG_VS    0x08
+#define NVME_REG_CC    0x14
+#define NVME_REG_CSTS  0x1C
+#define NVME_REG_AQA   0x24
+#define NVME_REG_ASQ   0x28
+#define NVME_REG_ACQ   0x30
 
 typedef struct nvme_queue {
   uint64_t addr, size;
