@@ -130,20 +130,31 @@ void _start(void) {
   char disabled_msg[] = "NVMED: disabled controller.\n";
   sys_write(1, disabled_msg, sizeof(disabled_msg) - 1);
   
+  uint64_t sq_phys;
+
   // TODO: 1 page / queue is overkill, but I am too lazy to add dma_alloc for now
-  nvme_queue_t* sq = (nvme_queue_t*)sys_dma_alloc_page();
+  nvme_sqe_t* sq = (nvme_sqe_t*)sys_dma_alloc_page(&sq_phys);
 
   if (!sq) {
     char msg[] = "NVMED: Failed to allocate submission queue.\n";
     sys_write(1, msg, sizeof(msg) - 1);
+    // TODO: cleanup
+    sys_exit(1);
   }
 
-  nvme_queue_t* cq = (nvme_queue_t*)sys_dma_alloc_page();
+  umemset(sq, 0, 0x1000);
+  
+  uint64_t cq_phys;
+  nvme_cqe_t* cq = (nvme_cqe_t*)sys_dma_alloc_page(&cq_phys);
   
   if (!cq) {
     char msg[] = "NVMED: Failed to allocate completition queue.\n";
     sys_write(1, msg, sizeof(msg) - 1);
+    // TODO: cleanup
+    sys_exit(1);
   }
+
+  umemset(cq, 0, 0x1000);
 
   char alloc_msg[] = "NVMED: allocated CQ/SQ.\n";
   sys_write(1, alloc_msg, sizeof(alloc_msg) - 1);
@@ -154,8 +165,8 @@ void _start(void) {
   char aqa_set_msg[] = "NVMED: Configured AQA.\n";
   sys_write(1, aqa_set_msg, sizeof(aqa_set_msg) - 1);
 
-  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ASQ, (uint64_t)sq);
-  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ACQ, (uint64_t)cq);
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ASQ, (uint64_t)sq_phys);
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ACQ, (uint64_t)cq_phys);
   
   char asq_acq_msg[] = "NVMED: Configured ASQ/ACQ.\n";
   sys_write(1, asq_acq_msg, sizeof(asq_acq_msg) - 1);
@@ -164,9 +175,109 @@ void _start(void) {
 
   cc |= 1u; // EN
   cc |= (6u << 16); // IOSQES
-  cc |= (4u << 16); // IOCQES
+  cc |= (4u << 20); // IOCQES
 
   nvme_write32((void*)USER_MMIO_MIN, NVME_REG_CC, cc);
+
+  while (!(*csts_reg & 1u)) {
+    __asm__ volatile ("pause");
+  }
+
+  char cc_msg[] = "NVMED: Configured CC.\n";
+  sys_write(1, cc_msg, sizeof(cc_msg) - 1);
+  
+  uint16_t admin_sq_tail = 0;
+  uint16_t admin_sq_head = 0;
+
+  uint16_t admin_cq_tail = 0;
+  uint16_t admin_cq_head = 0;
+
+  uint8_t admin_cq_phase = 1;
+  uint8_t admin_sq_phase = 1;
+
+  nvme_sqe_t cmd = {0};
+
+  cmd.cdw0 = 0x06 | (1u << 16);
+  cmd.nsid = 0;
+ 
+  uint64_t cmd_prp1_phys;
+  uint64_t cmd_prp1_virt = sys_dma_alloc_page(&cmd_prp1_phys);
+  
+  if (!cmd_prp1_virt) {
+    char msg[] = "NVMED: Failed to allocate buffer for Identify command.\n";
+    sys_write(1, msg, sizeof(msg) - 1);
+    // TODO: cleanup
+    sys_exit(1);
+  }
+
+  cmd.prp1 = cmd_prp1_phys;
+
+  cmd.prp2 = 0;
+
+  cmd.cdw10 = 1; // Identify Controller
+  
+  umemcpy(&sq[admin_sq_tail], &cmd, sizeof(cmd));
+
+  admin_sq_tail = (admin_sq_tail + 1) % NVME_ADMIN_QUEUE_SIZE;
+  
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS, admin_sq_tail);
+  
+  char db_msg[] = "NVMED: Rang doorbell...\n";
+  sys_write(1, db_msg, sizeof(db_msg) - 1);
+
+  volatile nvme_cqe_t *cqe = &cq[admin_cq_head];
+  
+  while ((cqe->status & 1u) != admin_cq_phase) {
+    __asm__ volatile ("pause");
+  }
+
+  uint16_t status = cqe->status >> 1;
+
+  if (status != 0) {
+    char msg[] = "NVMED: Identify command failed.\n";
+    sys_write(1, msg, sizeof(msg) - 1);
+    // TODO: cleanup
+    sys_exit(1);
+  }
+
+  char resp_received_msg[] = "NVMED: Identify command response received.\n";
+  sys_write(1, resp_received_msg, sizeof(resp_received_msg) - 1);
+  
+  uint8_t* identify = (uint8_t*)cmd_prp1_virt;
+
+  char serial[21] = {0};
+  char model[41] = {0};
+  char firmware[9] = {0};
+
+  umemcpy(serial, identify + 4, 20);
+  umemcpy(model, identify + 24, 40);
+  umemcpy(firmware, identify + 64, 8);
+
+  sys_write(1, "NVMED: Serial: ", 15);
+  sys_write(1, serial, 20);
+  sys_write(1, "\n", 1);
+
+  sys_write(1, "NVMED: Model: ", 14);
+  sys_write(1, model, 40);
+  sys_write(1, "\n", 1);
+
+  sys_write(1, "NVMED: Firmware: ", 17);
+  sys_write(1, firmware, 8);
+  sys_write(1, "\n", 1);
+
+  admin_sq_head = cqe->sq_head;
+  admin_cq_head++;
+
+  if (admin_cq_head == NVME_ADMIN_QUEUE_SIZE) {
+    admin_cq_head = 0;
+    admin_cq_phase ^= 1;
+  }
+
+  uint64_t cap = nvme_read64((void*)USER_MMIO_MIN, NVME_REG_CAP);
+  uint32_t dstrd = (cap >> 32) & 0xF;
+  uint32_t db_stride = 4u << dstrd;
+
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS + db_stride, admin_cq_head);
 
   sys_exit(0);
 }

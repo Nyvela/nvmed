@@ -13,6 +13,7 @@
 #define NVME_REG_AQA   0x24
 #define NVME_REG_ASQ   0x28
 #define NVME_REG_ACQ   0x30
+#define NVME_REG_DBS 0x1000
 
 typedef struct nvme_queue {
   uint64_t addr, size;
@@ -32,6 +33,7 @@ typedef struct nvme_cqe {
   uint32_t _reserved;
   uint16_t sq_head;
   uint16_t sqid;
+  uint16_t cmdid;
   uint16_t status;
 } nvme_cqe_t;
 
