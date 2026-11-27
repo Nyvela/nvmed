@@ -21,6 +21,10 @@ uint64_t nvme_read64(volatile void* base, uint32_t offset) {
   return *(volatile uint64_t*)((uintptr_t)base + offset);
 }
 
+uint64_t nvme_submit(nvme_queue_t *queue, const nvme_sqe_t* cmd) {
+
+}
+
 void _start(void) {
   uint64_t npcid_tid = 0;
 
@@ -130,31 +134,31 @@ void _start(void) {
   char disabled_msg[] = "NVMED: disabled controller.\n";
   sys_write(1, disabled_msg, sizeof(disabled_msg) - 1);
   
-  uint64_t sq_phys;
+  nvme_queue_t admin_q = {0};
+  admin_q.cq_phase = 1;
 
   // TODO: 1 page / queue is overkill, but I am too lazy to add dma_alloc for now
-  nvme_sqe_t* sq = (nvme_sqe_t*)sys_dma_alloc_page(&sq_phys);
+  admin_q.sq = (nvme_sqe_t*)sys_dma_alloc_page(&admin_q.sq_phys);
 
-  if (!sq) {
+  if (!admin_q.sq) {
     char msg[] = "NVMED: Failed to allocate submission queue.\n";
     sys_write(1, msg, sizeof(msg) - 1);
     // TODO: cleanup
     sys_exit(1);
   }
 
-  umemset(sq, 0, 0x1000);
+  umemset(admin_q.sq, 0, 0x1000);
   
-  uint64_t cq_phys;
-  nvme_cqe_t* cq = (nvme_cqe_t*)sys_dma_alloc_page(&cq_phys);
+  admin_q.cq = (nvme_cqe_t*)sys_dma_alloc_page(&admin_q.cq_phys);
   
-  if (!cq) {
+  if (!admin_q.cq) {
     char msg[] = "NVMED: Failed to allocate completition queue.\n";
     sys_write(1, msg, sizeof(msg) - 1);
     // TODO: cleanup
     sys_exit(1);
   }
 
-  umemset(cq, 0, 0x1000);
+  umemset(admin_q.cq, 0, 0x1000);
 
   char alloc_msg[] = "NVMED: allocated CQ/SQ.\n";
   sys_write(1, alloc_msg, sizeof(alloc_msg) - 1);
@@ -165,8 +169,8 @@ void _start(void) {
   char aqa_set_msg[] = "NVMED: Configured AQA.\n";
   sys_write(1, aqa_set_msg, sizeof(aqa_set_msg) - 1);
 
-  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ASQ, (uint64_t)sq_phys);
-  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ACQ, (uint64_t)cq_phys);
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ASQ, (uint64_t)admin_q.sq_phys);
+  nvme_write64((void*)USER_MMIO_MIN, NVME_REG_ACQ, (uint64_t)admin_q.cq_phys);
   
   char asq_acq_msg[] = "NVMED: Configured ASQ/ACQ.\n";
   sys_write(1, asq_acq_msg, sizeof(asq_acq_msg) - 1);
@@ -186,15 +190,6 @@ void _start(void) {
   char cc_msg[] = "NVMED: Configured CC.\n";
   sys_write(1, cc_msg, sizeof(cc_msg) - 1);
   
-  uint16_t admin_sq_tail = 0;
-  uint16_t admin_sq_head = 0;
-
-  uint16_t admin_cq_tail = 0;
-  uint16_t admin_cq_head = 0;
-
-  uint8_t admin_cq_phase = 1;
-  uint8_t admin_sq_phase = 1;
-
   nvme_sqe_t cmd = {0};
 
   cmd.cdw0 = 0x06 | (1u << 16);
@@ -216,18 +211,18 @@ void _start(void) {
 
   cmd.cdw10 = 1; // Identify Controller
   
-  umemcpy(&sq[admin_sq_tail], &cmd, sizeof(cmd));
+  umemcpy(&admin_q.sq[admin_q.sq_tail], &cmd, sizeof(cmd));
 
-  admin_sq_tail = (admin_sq_tail + 1) % NVME_ADMIN_QUEUE_SIZE;
+  admin_q.sq_tail = (admin_q.sq_tail + 1) % NVME_ADMIN_QUEUE_SIZE;
   
-  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS, admin_sq_tail);
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS, admin_q.sq_tail);
   
   char db_msg[] = "NVMED: Rang doorbell...\n";
   sys_write(1, db_msg, sizeof(db_msg) - 1);
 
-  volatile nvme_cqe_t *cqe = &cq[admin_cq_head];
+  volatile nvme_cqe_t *cqe = &admin_q.cq[admin_q.cq_head];
   
-  while ((cqe->status & 1u) != admin_cq_phase) {
+  while ((cqe->status & 1u) != admin_q.cq_phase) {
     __asm__ volatile ("pause");
   }
 
@@ -265,19 +260,19 @@ void _start(void) {
   sys_write(1, firmware, 8);
   sys_write(1, "\n", 1);
 
-  admin_sq_head = cqe->sq_head;
-  admin_cq_head++;
+  admin_q.sq_head = cqe->sq_head;
+  admin_q.cq_head++;
 
-  if (admin_cq_head == NVME_ADMIN_QUEUE_SIZE) {
-    admin_cq_head = 0;
-    admin_cq_phase ^= 1;
+  if (admin_q.cq_head == NVME_ADMIN_QUEUE_SIZE) {
+    admin_q.cq_head = 0;
+    admin_q.cq_phase ^= 1;
   }
 
   uint64_t cap = nvme_read64((void*)USER_MMIO_MIN, NVME_REG_CAP);
   uint32_t dstrd = (cap >> 32) & 0xF;
   uint32_t db_stride = 4u << dstrd;
 
-  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS + db_stride, admin_cq_head);
+  nvme_write32((void*)USER_MMIO_MIN, NVME_REG_DBS + db_stride, admin_q.cq_head);
 
   sys_exit(0);
 }

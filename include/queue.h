@@ -15,10 +15,6 @@
 #define NVME_REG_ACQ   0x30
 #define NVME_REG_DBS 0x1000
 
-typedef struct nvme_queue {
-  uint64_t addr, size;
-} nvme_queue_t;
-
 typedef struct nvme_sqe {
   uint32_t cdw0;
   uint32_t nsid;
@@ -36,6 +32,20 @@ typedef struct nvme_cqe {
   uint16_t cmdid;
   uint16_t status;
 } nvme_cqe_t;
+
+typedef struct nvme_queue {
+  nvme_sqe_t* sq;
+  nvme_cqe_t* cq;
+
+  uint64_t sq_phys, cq_phys;
+  uint16_t qid, size;
+
+  uint16_t sq_head, sq_tail;
+  uint16_t cq_head, cq_phase;
+
+  uint32_t sq_doorbell;
+  uint32_t cq_doorbell;
+} nvme_queue_t;
 
 _Static_assert(sizeof(nvme_sqe_t) == 64, "nvme_sqe_t must be 64 bytes");
 _Static_assert(sizeof(nvme_cqe_t) == 16, "nvme_cqe_t must be 16 bytes");
